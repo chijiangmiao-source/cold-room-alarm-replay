@@ -1,0 +1,56 @@
+# 冷库门告警接收与回放链路
+#
+# 三个服务：
+#   api     Go + SQLite，接收设备网关 JSON 回调、分配服务端序号、提供 SSE
+#   web     Vue 中控页面（nginx 托管并反代 /api 到 api）
+#   verify  一次性验收服务：真实回调 + 断线续传断言，通过即退出 0
+#
+# 端口可被环境变量覆盖：
+#   WEB_PORT  中控页面宿主机端口（默认 8081）
+#   API_PORT  API 宿主机端口（默认 8080）
+#
+# 用法：
+#   docker compose up -d --build          # 起 api + web
+#   docker compose run --rm verify        # 一次性联调验收
+#   WEB_PORT=9000 API_PORT=9090 docker compose up -d
+
+name: cold-alarm
+
+services:
+  api:
+    build: ./backend
+    environment:
+      API_PORT: "8080"
+      DB_PATH: /data/alarm.db
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - alarm-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  web:
+    build: ./frontend
+    ports:
+      - "${WEB_PORT:-8081}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # 一次性验收：对运行中的 api 做真实端到端断言后退出。
+  verify:
+    build: ./backend
+    entrypoint: ["verify"]
+    command: ["http://api:8080"]
+    environment:
+      API_BASE_URL: http://api:8080
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles: ["verify"]
+
+volumes:
+  alarm-data:
