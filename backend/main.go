@@ -49,6 +49,7 @@ func main() {
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/api/events", srv.handleEvents)
 	mux.HandleFunc("/api/events/stream", srv.handleStream)
+	mux.HandleFunc("/api/doors/active", srv.handleActiveDoors)
 
 	addr := ":" + port
 	log.Printf("alarm API listening on %s (db=%s)", addr, dbPath)
@@ -132,6 +133,26 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 	_ = json.NewEncoder(w).Encode(ev)
+}
+
+// handleActiveDoors 是只读快照接口：返回当前所有未关闭门，
+// 按异常开始序号升序。失败时使用与事件提交一致的 {"error": ...} 结构。
+func (s *Server) handleActiveDoors(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	doors, err := s.store.ActiveDoors(r.Context())
+	if err != nil {
+		log.Printf("active doors: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Doors []ActiveDoor `json:"doors"`
+	}{Doors: doors})
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {

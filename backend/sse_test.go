@@ -33,6 +33,8 @@ func newTestServerWith(t *testing.T, srv *Server) *httptest.Server {
 			srv.handleEvents(w, r)
 		case "/api/events/stream":
 			srv.handleStream(w, r)
+		case "/api/doors/active":
+			srv.handleActiveDoors(w, r)
 		default:
 			http.NotFound(w, r)
 		}

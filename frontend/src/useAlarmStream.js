@@ -9,7 +9,10 @@
 
 import { ref, computed } from 'vue'
 
-export function useAlarmStream(baseUrl = '') {
+// hooks 可选：
+//   onLiveAlarm(ev)  补发完成后收到的实时告警（用于刷新派生视图，如未关闭门）
+//   onReplayDone()   一次断线补发全部到齐（用于校准派生视图）
+export function useAlarmStream(baseUrl = '', hooks = {}) {
   const events = ref([])           // 已显示事件，按 seq 升序
   const connection = ref('connecting') // connecting | replaying | live | disconnected
   const lastSeq = ref(0)
@@ -23,13 +26,14 @@ export function useAlarmStream(baseUrl = '') {
   let stopped = false
 
   function upsert(ev) {
-    if (!Number.isInteger(ev.seq) || ev.seq <= 0) return
+    if (!Number.isInteger(ev.seq) || ev.seq <= 0) return false
     // 协议边界：只接受比最后已显示序号更大的事件。
-    if (ev.seq <= lastSeq.value || seen.has(ev.seq)) return
+    if (ev.seq <= lastSeq.value || seen.has(ev.seq)) return false
     seen.add(ev.seq)
     events.value.push(ev)
     events.value.sort((a, b) => a.seq - b.seq)
     lastSeq.value = ev.seq
+    return true
   }
 
   function connect() {
@@ -40,7 +44,10 @@ export function useAlarmStream(baseUrl = '') {
 
     es.addEventListener('alarm', (e) => {
       try {
-        upsert(JSON.parse(e.data))
+        // 补发阶段的帧由 replay-done 统一校准；只有实时告警才逐条触发刷新。
+        const isLive = connection.value === 'live'
+        const added = upsert(JSON.parse(e.data))
+        if (isLive && added) hooks.onLiveAlarm?.()
       } catch (err) {
         lastError.value = `无法解析事件帧: ${err.message}`
       }
@@ -51,6 +58,7 @@ export function useAlarmStream(baseUrl = '') {
       replayDoneAt.value = new Date().toISOString()
       connection.value = 'live'
       reconnectDelay = 500
+      hooks.onReplayDone?.()
     })
 
     es.onopen = () => {

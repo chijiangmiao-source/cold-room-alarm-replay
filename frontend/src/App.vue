@@ -1,12 +1,23 @@
 <script setup>
 import { onMounted, onBeforeUnmount, computed } from 'vue'
 import { useAlarmStream } from './useAlarmStream.js'
+import { useActiveDoors } from './useActiveDoors.js'
+
+// 未关闭门快照：初始加载一次，之后收到实时告警逐条刷新，
+// 断线补发完成（replay-done）再校准一次。快照失败只在门面板内提示。
+const { doors: activeDoors, error: doorsError, refresh: refreshDoors } = useActiveDoors('')
 
 const {
   events, connection, lastSeq, lastError, completeness, start, stop,
-} = useAlarmStream('')
+} = useAlarmStream('', {
+  onLiveAlarm: () => refreshDoors(),
+  onReplayDone: () => refreshDoors(),
+})
 
-onMounted(start)
+onMounted(() => {
+  start()
+  refreshDoors()
+})
 onBeforeUnmount(stop)
 
 const connectionMeta = {
@@ -51,29 +62,67 @@ const latestFirst = computed(() => [...events.value].sort((a, b) => b.seq - a.se
 
     <p v-if="lastError" class="error" data-testid="error">{{ lastError }}</p>
 
-    <section class="list">
-      <div v-if="latestFirst.length === 0" class="empty" data-testid="empty">
-        暂无告警，等待设备网关上报…
-      </div>
-      <article
-        v-for="ev in latestFirst"
-        :key="ev.seq"
-        class="event"
-        :class="kindMeta[ev.kind]?.cls"
-        :data-seq="ev.seq"
-        :data-event-id="ev.event_id"
-      >
-        <div class="event-head">
-          <span class="seq">#{{ ev.seq }}</span>
-          <span class="kind" data-testid="kind">{{ kindMeta[ev.kind]?.text ?? ev.kind }}</span>
-          <span class="door" data-testid="door">{{ ev.door_id }}</span>
+    <div class="layout">
+      <section class="list">
+        <div v-if="latestFirst.length === 0" class="empty" data-testid="empty">
+          暂无告警，等待设备网关上报…
         </div>
-        <div class="event-body">
-          <span>设备时间：{{ fmtDeviceTime(ev.occurred_at) }}</span>
-          <span class="event-id">event_id: {{ ev.event_id }}</span>
+        <article
+          v-for="ev in latestFirst"
+          :key="ev.seq"
+          class="event"
+          :class="kindMeta[ev.kind]?.cls"
+          :data-seq="ev.seq"
+          :data-event-id="ev.event_id"
+        >
+          <div class="event-head">
+            <span class="seq">#{{ ev.seq }}</span>
+            <span class="kind" data-testid="kind">{{ kindMeta[ev.kind]?.text ?? ev.kind }}</span>
+            <span class="door" data-testid="door">{{ ev.door_id }}</span>
+          </div>
+          <div class="event-body">
+            <span>设备时间：{{ fmtDeviceTime(ev.occurred_at) }}</span>
+            <span class="event-id">event_id: {{ ev.event_id }}</span>
+          </div>
+        </article>
+      </section>
+
+      <aside class="doors-panel" data-testid="active-doors">
+        <div class="doors-head">
+          <h2>未关闭门</h2>
+          <span class="doors-count" data-testid="active-doors-count">{{ activeDoors.length }}</span>
         </div>
-      </article>
-    </section>
+
+        <div v-if="doorsError" class="doors-error" data-testid="active-doors-error">
+          <span>{{ doorsError }}</span>
+          <button type="button" class="retry" data-testid="active-doors-retry" @click="refreshDoors">
+            重试
+          </button>
+        </div>
+
+        <div v-if="!doorsError && activeDoors.length === 0" class="doors-empty" data-testid="active-doors-empty">
+          全部冷库门已关闭
+        </div>
+
+        <article
+          v-for="d in activeDoors"
+          :key="d.door_id"
+          class="door-card"
+          :class="kindMeta[d.latest_kind]?.cls"
+          :data-door-id="d.door_id"
+          data-testid="active-door"
+        >
+          <div class="door-card-head">
+            <span class="door-name">{{ d.door_id }}</span>
+            <span class="kind">{{ kindMeta[d.latest_kind]?.text ?? d.latest_kind }}</span>
+          </div>
+          <div class="door-card-body">
+            <span>开始 #{{ d.start_seq }} · 最近 #{{ d.latest_seq }}</span>
+            <span>设备时间：{{ fmtDeviceTime(d.occurred_at) }}</span>
+          </div>
+        </article>
+      </aside>
+    </div>
   </main>
 </template>
 
@@ -106,7 +155,47 @@ h1 { font-size: 22px; margin: 0; }
 .seq-info { font-variant-numeric: tabular-nums; color: #93a4bb; font-size: 13px; }
 .error { color: #fca5a5; margin: 12px 0; }
 .empty { color: #7184a0; text-align: center; padding: 60px 0; }
+.layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 20px; align-items: start;
+}
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+}
 .list { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+.doors-panel {
+  margin-top: 18px; border: 1px solid #243044; border-radius: 10px;
+  background: #111927; padding: 14px 16px;
+  position: sticky; top: 16px;
+}
+.doors-head { display: flex; justify-content: space-between; align-items: center; }
+.doors-head h2 { font-size: 16px; margin: 0; }
+.doors-count {
+  min-width: 26px; text-align: center; padding: 2px 8px; border-radius: 999px;
+  background: #7f1d1d; color: #fecaca; font-weight: 700; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.doors-error {
+  margin-top: 12px; padding: 10px 12px; border: 1px solid #7f1d1d; border-radius: 8px;
+  color: #fca5a5; font-size: 13px; display: flex; flex-direction: column; gap: 8px;
+}
+.doors-error .retry {
+  align-self: flex-start; padding: 4px 14px; border-radius: 6px;
+  border: 1px solid #7f1d1d; background: #1f2937; color: #fecaca;
+  font-size: 13px; cursor: pointer;
+}
+.doors-error .retry:hover { background: #374151; }
+.doors-empty { margin-top: 12px; color: #7184a0; font-size: 13px; }
+.door-card {
+  margin-top: 12px; border: 1px solid #243044; border-left-width: 4px;
+  border-radius: 8px; padding: 10px 12px; background: #141c2b;
+}
+.door-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.door-name { font-weight: 700; color: #b8c6db; }
+.door-card-body {
+  margin-top: 6px; display: flex; flex-direction: column; gap: 2px;
+  color: #8fa3bd; font-size: 12px; font-variant-numeric: tabular-nums;
+}
 .event {
   border: 1px solid #243044; border-left-width: 4px; border-radius: 10px;
   padding: 12px 16px; background: #141c2b;

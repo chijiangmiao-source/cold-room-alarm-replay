@@ -7,6 +7,9 @@ export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
   fullyParallel: false,
+  // 所有 spec 共享同一个 API/数据库，且断言涉及全局序号连续性，
+  // 必须单 worker 串行，跨文件也不能并发提交事件。
+  workers: 1,
   reporter: [['list']],
   use: {
     baseURL: `http://localhost:${webPort}`,
